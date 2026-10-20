@@ -1,0 +1,6 @@
+# Antigravity System Rules for DropLedge
+- Target: macOS 14.0+ (Universal / Apple Silicon Optimized)
+- Language: Swift 6 (Strict Concurrency enabled)
+- Dependencies: 0 external packages. Only native Apple frameworks (AppKit, SwiftUI, Vision, ImageIO, AVFoundation, PDFKit).
+- Networking: Explicitly forbidden. No network calls, no cloud services.
+- Verification: Always run `swift build` or `xcodebuild` via the terminal after creating/editing files to verify that code compiles cleanly.
