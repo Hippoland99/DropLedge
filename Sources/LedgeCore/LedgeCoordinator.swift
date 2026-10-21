@@ -180,10 +180,35 @@ public actor LedgeCoordinator {
     public func quickSaveClipboard(baseDirectory: URL) async throws -> URL? {
         let pasteboard = NSPasteboard.general
         
-        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], let firstURL = urls.first {
+        // 1. Dateien aus Finder / Dateimanager (Cmd + C)
+        if let urls = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]
+        ) as? [URL], let firstURL = urls.first(where: { $0.isFileURL }) {
             return try await processDroppedFileURL(firstURL, baseDirectory: baseDirectory, sourceApp: "Clipboard")
         }
+        if let filenames = pasteboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String], let first = filenames.first {
+            let u = URL(fileURLWithPath: first)
+            if FileManager.default.fileExists(atPath: u.path(percentEncoded: false)) {
+                return try await processDroppedFileURL(u, baseDirectory: baseDirectory, sourceApp: "Clipboard")
+            }
+        }
+        if let urlString = pasteboard.string(forType: NSPasteboard.PasteboardType("public.file-url")),
+           let u = URL(string: urlString), u.isFileURL,
+           FileManager.default.fileExists(atPath: u.path(percentEncoded: false)) {
+            return try await processDroppedFileURL(u, baseDirectory: baseDirectory, sourceApp: "Clipboard")
+        }
         
+        // 2. Screenshots & Bilder (PNG, TIFF oder NSImage)
+        if let pngData = pasteboard.data(forType: .png), !pngData.isEmpty {
+            let result = try await processDroppedImage(
+                data: pngData,
+                fileExtension: "png",
+                baseDirectory: baseDirectory,
+                sourceApp: "Clipboard"
+            )
+            return result.savedURL
+        }
         if let image = NSImage(pasteboard: pasteboard),
            let tiffData = image.tiffRepresentation,
            let bitmap = NSBitmapImageRep(data: tiffData),
@@ -197,7 +222,8 @@ public actor LedgeCoordinator {
             return result.savedURL
         }
         
-        if let text = pasteboard.string(forType: .string), !text.isEmpty {
+        // 3. Text / Code
+        if let text = pasteboard.string(forType: .string), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return try await processDroppedText(text, baseDirectory: baseDirectory, sourceApp: "Clipboard")
         }
         

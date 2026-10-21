@@ -255,14 +255,14 @@ public struct LedgePopoverView: View {
                             .buttonStyle(.plain)
                             .help("Vollwertigen Finder-Dialog im Vordergrund öffnen")
                             
-                            // [ 📋 Text einfügen ] Button (Cmd + V)
+                            // [ 📋 ] Einfügen Button (Cmd + V: Dateien, Screenshots, Bilder, Text)
                             Button {
-                                pasteTextFromClipboard()
+                                pasteFromClipboard()
                             } label: {
                                 HStack(spacing: 4) {
                                     Image(systemName: "doc.on.clipboard.fill")
                                         .font(.system(size: 11, weight: .bold))
-                                    Text("[ 📋 ] Text einfügen")
+                                    Text("[ 📋 ] Einfügen")
                                         .font(.system(size: 11, weight: .semibold))
                                 }
                                 .padding(.horizontal, 9)
@@ -277,7 +277,7 @@ public struct LedgePopoverView: View {
                             }
                             .buttonStyle(.plain)
                             .keyboardShortcut("v", modifiers: .command)
-                            .help("Text aus Zwischenablage für Code & Snippet Studio laden (Cmd + V)")
+                            .help("Inhalt aus Zwischenablage einfügen: Dateien, Screenshots, Bilder oder Text (Cmd + V)")
                         }
                     }
                     .padding(.vertical, 10)
@@ -1050,21 +1050,169 @@ public struct LedgePopoverView: View {
         }
     }
     
-    // MARK: - Text & Code Snippet Studio
+    // MARK: - Clipboard Paste Ingestion (Files, Screenshots, Images, Code & Text)
     
-    private func pasteTextFromClipboard() {
-        guard let text = NSPasteboard.general.string(forType: .string),
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            showFeedback("Zwischenablage enthält keinen Text!")
+    private func pasteFromClipboard() {
+        let pasteboard = NSPasteboard.general
+        
+        // 1. Dateien aus Finder / Dateimanager (Cmd + C)
+        let fileURLs = getFileURLsFromPasteboard()
+        if !fileURLs.isEmpty {
+            appState.handleDrop(in: .smartSave, urls: fileURLs, text: nil)
+            HapticAudioEngine.shared.play(.dropSuccess)
+            let desc = fileURLs.count == 1 ? fileURLs[0].lastPathComponent : "\(fileURLs.count) Dateien"
+            showFeedback("\(desc) aus Zwischenablage eingefügt")
             return
         }
         
-        let classification = CodeClassifier.classify(rawText: text)
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-            self.snippetDraft = SnippetDraft(rawText: text, initialExtension: classification.fileExtension)
+        // 2. Screenshots & Bilder aus der Zwischenablage (Cmd + Ctrl + Shift + 4, Browser, etc.)
+        if let imageData = extractImageDataFromPasteboard() {
+            handlePastedImageData(imageData)
+            return
         }
+        
+        // 3. Code- oder Text-Snippets
+        if let text = pasteboard.string(forType: .string),
+           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let classification = CodeClassifier.classify(rawText: text)
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                self.snippetDraft = SnippetDraft(rawText: text, initialExtension: classification.fileExtension)
+            }
+            HapticAudioEngine.shared.play(.dropSuccess)
+            showFeedback("Code/Text erkannt (\(classification.language.rawValue))")
+            return
+        }
+        
+        // 4. Nicht unterstütztes Format oder leere Zwischenablage
+        showFeedback("Zwischenablage ist leer oder enthält kein unterstütztes Format!")
+    }
+    
+    private func pasteTextFromClipboard() {
+        pasteFromClipboard()
+    }
+    
+    private func getFileURLsFromPasteboard() -> [URL] {
+        let pasteboard = NSPasteboard.general
+        var urls: [URL] = []
+        
+        // Method 1: readObjects for NSURL mit urlReadingFileURLsOnly
+        if let objects = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]
+        ) as? [URL] {
+            for url in objects where url.isFileURL && FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) {
+                if !urls.contains(url) {
+                    urls.append(url)
+                }
+            }
+        }
+        
+        // Method 2: Fallback auf filenames property list (klassischer Finder Pasteboard-Typ)
+        if urls.isEmpty, let filenames = pasteboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String] {
+            for path in filenames {
+                let u = URL(fileURLWithPath: path)
+                if FileManager.default.fileExists(atPath: u.path(percentEncoded: false)) && !urls.contains(u) {
+                    urls.append(u)
+                }
+            }
+        }
+        
+        // Method 3: Fallback auf public.file-url String
+        if urls.isEmpty, let urlString = pasteboard.string(forType: NSPasteboard.PasteboardType("public.file-url")),
+           let u = URL(string: urlString), u.isFileURL,
+           FileManager.default.fileExists(atPath: u.path(percentEncoded: false)) {
+            urls.append(u)
+        }
+        
+        return urls
+    }
+    
+    private func extractImageDataFromPasteboard() -> Data? {
+        let pasteboard = NSPasteboard.general
+        
+        // 1. Direkte PNG-Daten
+        if let pngData = pasteboard.data(forType: .png), !pngData.isEmpty {
+            return pngData
+        }
+        
+        // 2. Direkte TIFF-Daten -> als PNG kodieren
+        if let tiffData = pasteboard.data(forType: .tiff),
+           let bitmap = NSBitmapImageRep(data: tiffData),
+           let pngData = bitmap.representation(using: .png, properties: [:]) {
+            return pngData
+        }
+        
+        // 3. Fallback über NSImage (unterstützt Screenshots aus vielen Apps)
+        if let image = NSImage(pasteboard: pasteboard),
+           let tiffData = image.tiffRepresentation,
+           let bitmap = NSBitmapImageRep(data: tiffData),
+           let pngData = bitmap.representation(using: .png, properties: [:]) {
+            return pngData
+        }
+        
+        return nil
+    }
+    
+    private func handlePastedImageData(_ imageData: Data) {
+        let timestamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        let tempFileURL = tempDir.appendingPathComponent("DropLedge_Pasted_\(timestamp).png")
+        
+        do {
+            try imageData.write(to: tempFileURL, options: .atomic)
+        } catch {
+            showFeedback("Fehler beim Speichern: \(error.localizedDescription)")
+            return
+        }
+        
         HapticAudioEngine.shared.play(.dropSuccess)
-        showFeedback("Code/Text erkannt (\(classification.language.rawValue))")
+        showFeedback("Screenshot/Bild aus Zwischenablage geladen...")
+        
+        Task {
+            let coordinator = LedgeCoordinator.shared
+            let baseDir = appState.libraryDirectory
+            
+            var savedURL = tempFileURL
+            var detectedText: String? = nil
+            
+            do {
+                let result = try await coordinator.processDroppedImage(
+                    data: imageData,
+                    fileExtension: "png",
+                    baseDirectory: baseDir,
+                    sourceApp: "ClipboardScreenshot"
+                )
+                savedURL = result.savedURL
+                detectedText = result.ocrText
+            } catch {
+                print("[DropLedge] Fehler beim Speichern des Bildes in Library: \(error)")
+            }
+            
+            let captured = CapturedScreenshot(
+                fileURL: savedURL,
+                ocrText: detectedText ?? ""
+            )
+            
+            let item = LedgeItem(
+                originalURL: tempFileURL,
+                savedURL: savedURL,
+                timestamp: Date(),
+                contentType: .image,
+                suggestedFileName: savedURL.lastPathComponent,
+                extractedText: detectedText,
+                tags: ["Screenshot", "Pasted"]
+            )
+            
+            await MainActor.run {
+                appState.capturedScreenshot = captured
+                appState.addOrUpdateItem(item)
+                if let text = detectedText, !text.isEmpty {
+                    showFeedback("Screenshot eingefügt & Text erkannt!")
+                } else {
+                    showFeedback("Screenshot/Bild in DropLedge eingefügt!")
+                }
+            }
+        }
     }
     
     private func saveSnippetAsFile(fileName: String, fileExtension: String) {

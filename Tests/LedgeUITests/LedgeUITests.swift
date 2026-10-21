@@ -92,4 +92,30 @@ final class LedgeUITests: XCTestCase {
         XCTAssertEqual(draft.lineCount, 1)
         XCTAssertEqual(draft.previewLines.first, jsonSample)
     }
+    
+    @MainActor
+    func testClipboardFilePasteHandling() throws {
+        let appState = AppState.shared
+        let dummyURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("pasted_doc_\(UUID().uuidString).txt")
+        try "Test Paste Content".write(to: dummyURL, atomically: true, encoding: .utf8)
+        
+        // Simuliere Kopieren im Finder auf NSPasteboard.general
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([dummyURL as NSURL])
+        
+        // Verifiziere, dass NSPasteboard die Datei als URL enthält
+        let readURLs = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [NSPasteboard.ReadingOptionKey.urlReadingFileURLsOnly: true]
+        ) as? [URL]
+        
+        XCTAssertNotNil(readURLs)
+        XCTAssertFalse(readURLs?.isEmpty ?? true)
+        XCTAssertEqual(readURLs?.first?.path, dummyURL.path)
+        
+        // Simuliere Drop / Paste ins AppState
+        appState.handleDrop(in: .smartSave, urls: readURLs!, text: nil)
+        XCTAssertTrue(appState.recentItems.contains(where: { $0.suggestedFileName == dummyURL.lastPathComponent }))
+    }
 }

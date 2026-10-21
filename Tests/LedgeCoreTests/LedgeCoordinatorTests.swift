@@ -194,4 +194,34 @@ final class LedgeCoordinatorTests: XCTestCase {
         }
         wait(for: [exp], timeout: 1.0)
     }
+    
+    func testQuickSaveClipboardWithPNGScreenshot() async throws {
+        let coordinator = LedgeCoordinator.shared
+        let pngData = createTestPNGData(text: "Clipboard Screenshot OCR")
+        
+        // Simuliere Screenshot in NSPasteboard.general
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setData(pngData, forType: .png)
+        
+        let savedURL = try await coordinator.quickSaveClipboard(baseDirectory: tempDirectory)
+        XCTAssertNotNil(savedURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: savedURL!.path))
+        XCTAssertEqual(savedURL?.pathExtension.lowercased(), "png")
+    }
+    
+    func testQuickSaveClipboardWithCopiedFileURL() async throws {
+        let coordinator = LedgeCoordinator.shared
+        let dummyFileURL = tempDirectory.appendingPathComponent("finder_copied_\(UUID().uuidString).json")
+        try "{\"status\":\"ok\"}".write(to: dummyFileURL, atomically: true, encoding: .utf8)
+        
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([dummyFileURL as NSURL])
+        
+        let savedURL = try await coordinator.quickSaveClipboard(baseDirectory: tempDirectory)
+        XCTAssertNotNil(savedURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: savedURL!.path))
+        XCTAssertEqual(savedURL?.pathExtension.lowercased(), "json")
+    }
 }
