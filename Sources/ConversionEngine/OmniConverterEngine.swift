@@ -27,6 +27,21 @@ public actor OmniConverterEngine {
         case bmp = "bmp"
     }
     
+    // MARK: - Safe Destination Helper (App Sandbox)
+    
+    public func safeDestination(for sourceURL: URL, suffix: String? = nil, newExtension: String? = nil) -> URL {
+        let name = sourceURL.deletingPathExtension().lastPathComponent
+        let ext = newExtension ?? sourceURL.pathExtension
+        let baseName = suffix != nil ? "\(name)_\(suffix!)" : name
+        let targetDir = sourceURL.deletingLastPathComponent()
+        
+        if FileManager.default.isWritableFile(atPath: targetDir.path(percentEncoded: false)) {
+            return targetDir.appendingPathComponent("\(baseName).\(ext)")
+        } else {
+            return URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("\(baseName).\(ext)")
+        }
+    }
+    
     // MARK: - Video Studio (Trim & Compression)
     
     /// Video trimmen (Trim) via AVAssetExportSession und CMTimeRange
@@ -36,6 +51,13 @@ public actor OmniConverterEngine {
         endTime: Double,
         destinationURL: URL? = nil
     ) async throws -> URL {
+        let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        
         let asset = AVURLAsset(url: sourceURL)
         let duration = try await asset.load(.duration)
         let totalSeconds = CMTimeGetSeconds(duration)
@@ -47,9 +69,8 @@ public actor OmniConverterEngine {
             duration: CMTime(seconds: end - start, preferredTimescale: 600)
         )
         
-        let name = sourceURL.deletingPathExtension().lastPathComponent
         let ext = sourceURL.pathExtension
-        let dest = destinationURL ?? sourceURL.deletingLastPathComponent().appendingPathComponent("\(name)_Trimmed.\(ext)")
+        let dest = destinationURL ?? safeDestination(for: sourceURL, suffix: "Trimmed", newExtension: ext)
         
         let preset = AVAssetExportPresetPassthrough
         guard let exportSession = AVAssetExportSession(asset: asset, presetName: preset) ??
@@ -80,9 +101,15 @@ public actor OmniConverterEngine {
         targetMB: Double,
         destinationURL: URL? = nil
     ) async throws -> URL {
-        let name = sourceURL.deletingPathExtension().lastPathComponent
+        let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        
         let tag = targetMB <= 10.0 ? "Email10MB" : "Discord25MB"
-        let dest = destinationURL ?? sourceURL.deletingLastPathComponent().appendingPathComponent("\(name)_\(tag).mp4")
+        let dest = destinationURL ?? safeDestination(for: sourceURL, suffix: tag, newExtension: "mp4")
         let asset = AVURLAsset(url: sourceURL)
         
         let preset: String
@@ -125,7 +152,14 @@ public actor OmniConverterEngine {
         fps: Int = 15,
         maxDurationSeconds: Double = 12.0
     ) async throws -> URL {
-        let dest = destinationURL ?? sourceURL.deletingPathExtension().appendingPathExtension("gif")
+        let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        
+        let dest = destinationURL ?? safeDestination(for: sourceURL, newExtension: "gif")
         let asset = AVURLAsset(url: sourceURL)
         
         let duration = try await asset.load(.duration)
@@ -185,7 +219,14 @@ public actor OmniConverterEngine {
     
     /// Audio-Extraktion als M4A/AAC
     public func extractAudio(sourceURL: URL, destinationURL: URL? = nil) async throws -> URL {
-        let dest = destinationURL ?? sourceURL.deletingPathExtension().appendingPathExtension("m4a")
+        let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        
+        let dest = destinationURL ?? safeDestination(for: sourceURL, newExtension: "m4a")
         let asset = AVURLAsset(url: sourceURL)
         
         guard let exportSession = AVAssetExportSession(
@@ -218,6 +259,13 @@ public actor OmniConverterEngine {
         aspectRatio: AspectRatioPreset,
         destinationURL: URL? = nil
     ) throws -> URL {
+        let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        
         guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
               let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil),
               let uti = CGImageSourceGetType(source) else {
@@ -252,10 +300,9 @@ public actor OmniConverterEngine {
             throw CocoaError(.fileWriteUnknown)
         }
         
-        let name = sourceURL.deletingPathExtension().lastPathComponent
         let ext = sourceURL.pathExtension
         let ratioTag = aspectRatio.rawValue.replacingOccurrences(of: ":", with: "-")
-        let dest = destinationURL ?? sourceURL.deletingLastPathComponent().appendingPathComponent("\(name)_Crop_\(ratioTag).\(ext)")
+        let dest = destinationURL ?? safeDestination(for: sourceURL, suffix: "Crop_\(ratioTag)", newExtension: ext)
         
         guard let destination = CGImageDestinationCreateWithURL(dest as CFURL, uti, 1, nil) else {
             throw CocoaError(.fileWriteUnknown)
@@ -274,6 +321,13 @@ public actor OmniConverterEngine {
         maxWidth: CGFloat? = nil,
         destinationURL: URL? = nil
     ) throws -> URL {
+        let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        
         guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
               let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil),
               let uti = CGImageSourceGetType(source) else {
@@ -318,10 +372,9 @@ public actor OmniConverterEngine {
             throw CocoaError(.fileWriteUnknown)
         }
         
-        let name = sourceURL.deletingPathExtension().lastPathComponent
         let ext = sourceURL.pathExtension
         let tag = (scale != nil) ? "Scale50" : "Max1920"
-        let dest = destinationURL ?? sourceURL.deletingLastPathComponent().appendingPathComponent("\(name)_\(tag).\(ext)")
+        let dest = destinationURL ?? safeDestination(for: sourceURL, suffix: tag, newExtension: ext)
         
         guard let destination = CGImageDestinationCreateWithURL(dest as CFURL, uti, 1, nil) else {
             throw CocoaError(.fileWriteUnknown)
@@ -340,15 +393,21 @@ public actor OmniConverterEngine {
         targetFormat: ImageTargetFormat? = nil,
         destinationURL: URL? = nil
     ) async throws -> URL {
+        let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        
         guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
               let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
             throw CocoaError(.fileReadCorruptFile)
         }
         
         let format = targetFormat ?? (quality < 0.99 ? .jpeg : .png)
-        let name = sourceURL.deletingPathExtension().lastPathComponent
         let qTag = Int(quality * 100)
-        let dest = destinationURL ?? sourceURL.deletingLastPathComponent().appendingPathComponent("\(name)_Q\(qTag).\(format.rawValue)")
+        let dest = destinationURL ?? safeDestination(for: sourceURL, suffix: "Q\(qTag)", newExtension: format.rawValue)
         
         if format == .webp {
             return try await ConversionEngine.shared.convertToWebP(sourceURL: sourceURL, destinationURL: dest)
@@ -375,7 +434,14 @@ public actor OmniConverterEngine {
         targetFormat: ImageTargetFormat,
         destinationURL: URL? = nil
     ) async throws -> URL {
-        let dest = destinationURL ?? sourceURL.deletingPathExtension().appendingPathExtension(targetFormat.rawValue)
+        let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        
+        let dest = destinationURL ?? safeDestination(for: sourceURL, newExtension: targetFormat.rawValue)
         
         if targetFormat == .webp {
             return try await ConversionEngine.shared.convertToWebP(sourceURL: sourceURL, destinationURL: dest)
@@ -399,9 +465,16 @@ public actor OmniConverterEngine {
         targetExtension: String,
         destinationURL: URL? = nil
     ) async throws -> URL {
+        let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        
         let cleanExt = targetExtension.trimmingCharacters(in: CharacterSet(charactersIn: ". ")).lowercased()
         guard !cleanExt.isEmpty else { throw CocoaError(.fileWriteInvalidFileName) }
-        let dest = destinationURL ?? sourceURL.deletingPathExtension().appendingPathExtension(cleanExt)
+        let dest = destinationURL ?? safeDestination(for: sourceURL, newExtension: cleanExt)
         
         if isImage(url: sourceURL) {
             if cleanExt == "webp" {
@@ -466,6 +539,13 @@ public actor OmniConverterEngine {
         quality: CGFloat = 0.65,
         destinationURL: URL? = nil
     ) throws -> URL {
+        let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        
         guard let document = PDFDocument(url: sourceURL) else {
             throw CocoaError(.fileReadCorruptFile)
         }
@@ -539,9 +619,8 @@ public actor OmniConverterEngine {
             throw CocoaError(.fileWriteUnknown)
         }
         
-        let name = sourceURL.deletingPathExtension().lastPathComponent
         let dpiTag = (maxDPI <= 72) ? "Mail_72DPI" : "\(Int(maxDPI))DPI"
-        let dest = destinationURL ?? sourceURL.deletingLastPathComponent().appendingPathComponent("\(name)_Compressed_\(dpiTag).pdf")
+        let dest = destinationURL ?? safeDestination(for: sourceURL, suffix: "Compressed_\(dpiTag)", newExtension: "pdf")
         
         try outputData.write(to: dest, options: .atomic)
         return dest
@@ -553,6 +632,13 @@ public actor OmniConverterEngine {
         pageSelection: String,
         destinationURL: URL? = nil
     ) throws -> URL {
+        let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        
         guard let document = PDFDocument(url: sourceURL) else {
             throw CocoaError(.fileReadCorruptFile)
         }
@@ -578,11 +664,10 @@ public actor OmniConverterEngine {
             throw CocoaError(.fileWriteUnknown)
         }
         
-        let name = sourceURL.deletingPathExtension().lastPathComponent
         let sanitizedSelection = pageSelection
             .replacingOccurrences(of: " ", with: "")
             .replacingOccurrences(of: ",", with: "_")
-        let dest = destinationURL ?? sourceURL.deletingLastPathComponent().appendingPathComponent("\(name)_Pages_\(sanitizedSelection).pdf")
+        let dest = destinationURL ?? safeDestination(for: sourceURL, suffix: "Pages_\(sanitizedSelection)", newExtension: "pdf")
         
         try outputData.write(to: dest, options: .atomic)
         return dest

@@ -27,6 +27,11 @@ public final class ScreenshotStudio {
     
     /// Startet die interaktive Bildschirmerfassung via /usr/sbin/screencapture -i -c
     public func captureInteractiveScreenshot() {
+        // TCC / Screen Recording Berechtigungsprüfung (macOS Sonoma / Sequoia)
+        if !CGPreflightScreenCaptureAccess() {
+            _ = CGRequestScreenCaptureAccess()
+        }
+        
         Task.detached {
             let initialChangeCount = await MainActor.run { NSPasteboard.general.changeCount }
             
@@ -39,6 +44,9 @@ public final class ScreenshotStudio {
                 process.waitUntilExit()
             } catch {
                 print("[DropLedge ScreenshotStudio] Process Error: \(error)")
+                await MainActor.run {
+                    AppState.shared.statusToastMessage = "Screenshot fehlgeschlagen: Bitte Berechtigung in Systemeinstellungen prüfen."
+                }
                 return
             }
             

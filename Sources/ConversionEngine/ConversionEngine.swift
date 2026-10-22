@@ -10,6 +10,13 @@ public actor ImageOptimizer {
     private init() {}
     
     public func stripMetadata(from sourceURL: URL, targetURL: URL) throws {
+        let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        
         guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
               let uti = CGImageSourceGetType(source) else {
             throw CocoaError(.fileReadCorruptFile)
@@ -38,13 +45,33 @@ public actor ConversionEngine {
     public static let shared = ConversionEngine()
     private init() {}
     
+    private func safeDestination(for sourceURL: URL, newExtension: String, suffix: String? = nil) -> URL {
+        let name = sourceURL.deletingPathExtension().lastPathComponent
+        let baseName = suffix != nil ? "\(name)_\(suffix!)" : name
+        let targetDir = sourceURL.deletingLastPathComponent()
+        
+        // Teste Schreibrechte im Ursprungsverzeichnis (für Sandbox)
+        if FileManager.default.isWritableFile(atPath: targetDir.path(percentEncoded: false)) {
+            return targetDir.appendingPathComponent("\(baseName).\(newExtension)")
+        } else {
+            return URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("\(baseName).\(newExtension)")
+        }
+    }
+    
     public func optimizeImage(sourceURL: URL, targetURL: URL) async throws {
         try await ImageOptimizer.shared.stripMetadata(from: sourceURL, targetURL: targetURL)
     }
     
     /// Konvertiert ein Bild in das WebP-Format (mit verlustfreiem PNG-Fallback)
     public func convertToWebP(sourceURL: URL, destinationURL: URL? = nil) throws -> URL {
-        let dest = destinationURL ?? sourceURL.deletingPathExtension().appendingPathExtension("webp")
+        let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        
+        let dest = destinationURL ?? safeDestination(for: sourceURL, newExtension: "webp")
         guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
               let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
             throw CocoaError(.fileReadCorruptFile)
@@ -59,7 +86,7 @@ public actor ConversionEngine {
         }
         
         // Fallback: Optimiertes PNG
-        let fallbackDest = sourceURL.deletingPathExtension().appendingPathExtension("png")
+        let fallbackDest = destinationURL ?? safeDestination(for: sourceURL, newExtension: "png")
         if let destination = CGImageDestinationCreateWithURL(fallbackDest as CFURL, UTType.png.identifier as CFString, 1, nil) {
             CGImageDestinationAddImage(destination, cgImage, nil)
             if CGImageDestinationFinalize(destination) {
@@ -71,9 +98,8 @@ public actor ConversionEngine {
     
     /// Entfernt alle EXIF/GPS/TIFF Metadaten und erzeugt eine bereinigte Kopie
     public func stripEXIFMetadata(sourceURL: URL, destinationURL: URL? = nil) async throws -> URL {
-        let name = sourceURL.deletingPathExtension().lastPathComponent
         let ext = sourceURL.pathExtension
-        let dest = destinationURL ?? sourceURL.deletingLastPathComponent().appendingPathComponent("\(name)_Sanitized.\(ext)")
+        let dest = destinationURL ?? safeDestination(for: sourceURL, newExtension: ext, suffix: "Sanitized")
         try await ImageOptimizer.shared.stripMetadata(from: sourceURL, targetURL: dest)
         return dest
     }

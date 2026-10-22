@@ -121,14 +121,22 @@ public final class MenuBarController {
             popover.performClose(nil)
         } else {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+            if let window = popover.contentViewController?.view.window {
+                window.level = .floating
+                window.makeKey()
+            }
+            NSApp.activate(ignoringOtherApps: true)
         }
     }
     
     public func showPopover() {
         guard let popover = popover, let button = statusItem?.button, !popover.isShown else { return }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        popover.contentViewController?.view.window?.makeKey()
+        if let window = popover.contentViewController?.view.window {
+            window.level = .floating
+            window.makeKey()
+        }
+        NSApp.activate(ignoringOtherApps: true)
     }
     
     public func closePopover() {

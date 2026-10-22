@@ -81,4 +81,25 @@ public actor VisionEngine {
         
         return try recognizeText(from: cgImage, languages: languages, recognitionLevel: recognitionLevel)
     }
+    
+    /// Streaming-Texterkennung direkt aus einer Dateipfad-URL (App Sandbox & Memory-Safe)
+    public func recognizeText(
+        from url: URL,
+        languages: [String] = ["de-DE", "en-US"],
+        recognitionLevel: VNRequestTextRecognitionLevel = .accurate
+    ) throws -> RecognitionResult {
+        let isAccessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+        
+        guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+            throw VisionError.invalidImageData
+        }
+        
+        return try recognizeText(from: cgImage, languages: languages, recognitionLevel: recognitionLevel)
+    }
 }

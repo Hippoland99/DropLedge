@@ -16,6 +16,7 @@ public struct LedgePopoverView: View {
     @State private var selectedTab: PopoverTab = .quickActions
     @State private var isTargetedForDrop: Bool = false
     @State private var actionFeedbackMessage: String?
+    @State private var currentConversionTask: Task<Void, Never>? = nil
     
     // Text & Code Snippet Studio State
     @State private var snippetDraft: SnippetDraft? = nil
@@ -284,8 +285,16 @@ public struct LedgePopoverView: View {
                 }
                 .frame(height: 98)
                 .dropDestination(for: URL.self) { items, _ in
-                    guard !items.isEmpty else { return false }
-                    appState.handleDrop(in: .smartSave, urls: items, text: nil)
+                    currentConversionTask?.cancel()
+                    currentConversionTask = nil
+                    appState.isConverting = false
+                    
+                    let validURLs = items.filter { $0.isFileURL }
+                    guard !validURLs.isEmpty else { return false }
+                    for u in validURLs {
+                        _ = u.startAccessingSecurityScopedResource()
+                    }
+                    appState.handleDrop(in: .smartSave, urls: validURLs, text: nil)
                     HapticAudioEngine.shared.play(.dropSuccess)
                     return true
                 } isTargeted: { targeted in
@@ -294,19 +303,35 @@ public struct LedgePopoverView: View {
                     }
                 }
                 
-                // MARK: 4. Native Progress Bar bei Konvertierung
+                // MARK: 4. Native Progress Bar bei Konvertierung (mit Abbruch-Möglichkeit)
                 if appState.isConverting {
-                    VStack(spacing: 5) {
-                        ProgressView()
-                            .progressViewStyle(.linear)
-                            .tint(Color.accentColor)
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            ProgressView()
+                                .progressViewStyle(.linear)
+                                .tint(Color.accentColor)
+                            
+                            Text(appState.conversionStatusMessage ?? "Verarbeitung läuft...")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
                         
-                        Text(appState.conversionStatusMessage ?? "Verarbeitung läuft...")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
+                        Button {
+                            currentConversionTask?.cancel()
+                            currentConversionTask = nil
+                            appState.isConverting = false
+                            appState.conversionStatusMessage = nil
+                            showFeedback("Aktion abgebrochen")
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Aktuelle Konvertierung abbrechen")
                     }
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
+                    .padding(.vertical, 6)
                     .background(Color.white.opacity(0.06))
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .transition(.opacity.combined(with: .scale))
@@ -1246,12 +1271,18 @@ public struct LedgePopoverView: View {
     private func runPDFCompression(maxDPI: CGFloat, quality: CGFloat, tag: String) {
         guard let url = activeItem?.fileURL else { return }
         let originalSize = activeItemFileSizeBytes
+        currentConversionTask?.cancel()
         appState.isConverting = true
         appState.conversionStatusMessage = "Komprimiere PDF (\(Int(maxDPI)) DPI)..."
         
-        Task {
+        currentConversionTask = Task {
+            defer {
+                appState.isConverting = false
+                appState.conversionStatusMessage = nil
+            }
             do {
                 let compressedURL = try await LedgeCoordinator.shared.compressPDF(url: url, maxDPI: maxDPI, quality: quality)
+                guard !Task.isCancelled else { return }
                 let item = LedgeItem(
                     originalURL: url,
                     savedURL: compressedURL,
@@ -1265,22 +1296,27 @@ public struct LedgePopoverView: View {
                 showFeedback("PDF erfolgreich komprimiert (\(item.sizeSavingsBadge ?? ""))!")
                 HapticAudioEngine.shared.play(.conversionDone)
             } catch {
+                guard !Task.isCancelled else { return }
                 showFeedback("Fehler: \(error.localizedDescription)")
             }
-            appState.isConverting = false
-            appState.conversionStatusMessage = nil
         }
     }
     
     private func runPDFExtractFirstPage() {
         guard let url = activeItem?.fileURL else { return }
         let originalSize = activeItemFileSizeBytes
+        currentConversionTask?.cancel()
         appState.isConverting = true
         appState.conversionStatusMessage = "Extrahiere 1. Seite..."
         
-        Task {
+        currentConversionTask = Task {
+            defer {
+                appState.isConverting = false
+                appState.conversionStatusMessage = nil
+            }
             do {
                 let extractedURL = try await LedgeCoordinator.shared.extractFirstPDFPage(url: url)
+                guard !Task.isCancelled else { return }
                 let item = LedgeItem(
                     originalURL: url,
                     savedURL: extractedURL,
@@ -1294,10 +1330,9 @@ public struct LedgePopoverView: View {
                 showFeedback("1. Seite extrahiert: \(extractedURL.lastPathComponent)")
                 HapticAudioEngine.shared.play(.conversionDone)
             } catch {
+                guard !Task.isCancelled else { return }
                 showFeedback("Fehler: \(error.localizedDescription)")
             }
-            appState.isConverting = false
-            appState.conversionStatusMessage = nil
         }
     }
     
@@ -1307,12 +1342,18 @@ public struct LedgePopoverView: View {
         let clean = selection.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
         
+        currentConversionTask?.cancel()
         appState.isConverting = true
         appState.conversionStatusMessage = "Extrahiere Seiten \(clean)..."
         
-        Task {
+        currentConversionTask = Task {
+            defer {
+                appState.isConverting = false
+                appState.conversionStatusMessage = nil
+            }
             do {
                 let extractedURL = try await LedgeCoordinator.shared.extractPDFPages(url: url, pageSelection: clean)
+                guard !Task.isCancelled else { return }
                 let item = LedgeItem(
                     originalURL: url,
                     savedURL: extractedURL,
@@ -1326,22 +1367,27 @@ public struct LedgePopoverView: View {
                 showFeedback("Seiten extrahiert: \(extractedURL.lastPathComponent)")
                 HapticAudioEngine.shared.play(.conversionDone)
             } catch {
+                guard !Task.isCancelled else { return }
                 showFeedback("Fehler: \(error.localizedDescription)")
             }
-            appState.isConverting = false
-            appState.conversionStatusMessage = nil
         }
     }
     
     private func runVideoConversion(operation: @escaping (URL) async throws -> URL) {
         guard let url = activeItem?.fileURL else { return }
         let originalSize = activeItemFileSizeBytes
+        currentConversionTask?.cancel()
         appState.isConverting = true
         appState.conversionStatusMessage = "Transkodiere Video..."
         
-        Task {
+        currentConversionTask = Task {
+            defer {
+                appState.isConverting = false
+                appState.conversionStatusMessage = nil
+            }
             do {
                 let convertedURL = try await operation(url)
+                guard !Task.isCancelled else { return }
                 let item = LedgeItem(
                     originalURL: url,
                     savedURL: convertedURL,
@@ -1355,22 +1401,27 @@ public struct LedgePopoverView: View {
                 showFeedback("Video erfolgreich exportiert!")
                 HapticAudioEngine.shared.play(.conversionDone)
             } catch {
+                guard !Task.isCancelled else { return }
                 showFeedback("Fehler: \(error.localizedDescription)")
             }
-            appState.isConverting = false
-            appState.conversionStatusMessage = nil
         }
     }
     
     private func runImageCrop(ratio: OmniConverterEngine.AspectRatioPreset) {
         guard let url = activeItem?.fileURL else { return }
         let originalSize = activeItemFileSizeBytes
+        currentConversionTask?.cancel()
         appState.isConverting = true
         appState.conversionStatusMessage = "Schneide Seitenverhältnis zu..."
         
-        Task {
+        currentConversionTask = Task {
+            defer {
+                appState.isConverting = false
+                appState.conversionStatusMessage = nil
+            }
             do {
                 let croppedURL = try await LedgeCoordinator.shared.cropImage(url: url, aspectRatio: ratio)
+                guard !Task.isCancelled else { return }
                 let item = LedgeItem(
                     originalURL: url,
                     savedURL: croppedURL,
@@ -1384,22 +1435,27 @@ public struct LedgePopoverView: View {
                 showFeedback("Auf \(ratio.rawValue) zugeschnitten!")
                 HapticAudioEngine.shared.play(.conversionDone)
             } catch {
+                guard !Task.isCancelled else { return }
                 showFeedback("Fehler: \(error.localizedDescription)")
             }
-            appState.isConverting = false
-            appState.conversionStatusMessage = nil
         }
     }
     
     private func runImageResize(scale: Double? = nil, maxWidth: CGFloat? = nil) {
         guard let url = activeItem?.fileURL else { return }
         let originalSize = activeItemFileSizeBytes
+        currentConversionTask?.cancel()
         appState.isConverting = true
         appState.conversionStatusMessage = "Skaliere Bild..."
         
-        Task {
+        currentConversionTask = Task {
+            defer {
+                appState.isConverting = false
+                appState.conversionStatusMessage = nil
+            }
             do {
                 let resizedURL = try await LedgeCoordinator.shared.resizeImage(url: url, scale: scale, maxWidth: maxWidth)
+                guard !Task.isCancelled else { return }
                 let item = LedgeItem(
                     originalURL: url,
                     savedURL: resizedURL,
@@ -1413,22 +1469,27 @@ public struct LedgePopoverView: View {
                 showFeedback("Bild erfolgreich skaliert!")
                 HapticAudioEngine.shared.play(.conversionDone)
             } catch {
+                guard !Task.isCancelled else { return }
                 showFeedback("Fehler: \(error.localizedDescription)")
             }
-            appState.isConverting = false
-            appState.conversionStatusMessage = nil
         }
     }
     
     private func runImageCompression(quality: Double) {
         guard let url = activeItem?.fileURL else { return }
         let originalSize = activeItemFileSizeBytes
+        currentConversionTask?.cancel()
         appState.isConverting = true
         appState.conversionStatusMessage = "Komprimiere Bild..."
         
-        Task {
+        currentConversionTask = Task {
+            defer {
+                appState.isConverting = false
+                appState.conversionStatusMessage = nil
+            }
             do {
                 let compressedURL = try await LedgeCoordinator.shared.compressImage(url: url, quality: quality)
+                guard !Task.isCancelled else { return }
                 let item = LedgeItem(
                     originalURL: url,
                     savedURL: compressedURL,
@@ -1442,22 +1503,27 @@ public struct LedgePopoverView: View {
                 showFeedback("Bild auf \(Int(quality * 100))% komprimiert!")
                 HapticAudioEngine.shared.play(.conversionDone)
             } catch {
+                guard !Task.isCancelled else { return }
                 showFeedback("Fehler: \(error.localizedDescription)")
             }
-            appState.isConverting = false
-            appState.conversionStatusMessage = nil
         }
     }
     
     private func runImageConversion(format: OmniConverterEngine.ImageTargetFormat) {
         guard let url = activeItem?.fileURL else { return }
         let originalSize = activeItemFileSizeBytes
+        currentConversionTask?.cancel()
         appState.isConverting = true
         appState.conversionStatusMessage = "Konvertiere Bild zu \(format.rawValue.uppercased())..."
         
-        Task {
+        currentConversionTask = Task {
+            defer {
+                appState.isConverting = false
+                appState.conversionStatusMessage = nil
+            }
             do {
                 let convertedURL = try await LedgeCoordinator.shared.convertImage(url: url, to: format)
+                guard !Task.isCancelled else { return }
                 let item = LedgeItem(
                     originalURL: url,
                     savedURL: convertedURL,
@@ -1471,10 +1537,9 @@ public struct LedgePopoverView: View {
                 showFeedback("Bild als \(format.rawValue.uppercased()) konvertiert!")
                 HapticAudioEngine.shared.play(.conversionDone)
             } catch {
+                guard !Task.isCancelled else { return }
                 showFeedback("Fehler: \(error.localizedDescription)")
             }
-            appState.isConverting = false
-            appState.conversionStatusMessage = nil
         }
     }
     
@@ -1484,12 +1549,18 @@ public struct LedgePopoverView: View {
         let clean = ext.trimmingCharacters(in: CharacterSet(charactersIn: ". ")).lowercased()
         guard !clean.isEmpty else { return }
         
+        currentConversionTask?.cancel()
         appState.isConverting = true
         appState.conversionStatusMessage = "Konvertiere zu .\(clean)..."
         
-        Task {
+        currentConversionTask = Task {
+            defer {
+                appState.isConverting = false
+                appState.conversionStatusMessage = nil
+            }
             do {
                 let convertedURL = try await LedgeCoordinator.shared.convertToCustomFormat(url: url, targetExtension: clean)
+                guard !Task.isCancelled else { return }
                 let item = LedgeItem(
                     originalURL: url,
                     savedURL: convertedURL,
@@ -1503,21 +1574,26 @@ public struct LedgePopoverView: View {
                 showFeedback("Erfolgreich als .\(clean) exportiert!")
                 HapticAudioEngine.shared.play(.conversionDone)
             } catch {
+                guard !Task.isCancelled else { return }
                 showFeedback("Fehler: \(error.localizedDescription)")
             }
-            appState.isConverting = false
-            appState.conversionStatusMessage = nil
         }
     }
     
     private func runEXIFSanitizing() {
         guard let url = activeItem?.fileURL else { return }
+        currentConversionTask?.cancel()
         appState.isConverting = true
         appState.conversionStatusMessage = "Bereinige EXIF & GPS Metadaten..."
         
-        Task {
+        currentConversionTask = Task {
+            defer {
+                appState.isConverting = false
+                appState.conversionStatusMessage = nil
+            }
             do {
                 let sanitizedURL = try await LedgeCoordinator.shared.stripMetadata(url: url)
+                guard !Task.isCancelled else { return }
                 let item = LedgeItem(
                     originalURL: url,
                     savedURL: sanitizedURL,
@@ -1530,35 +1606,45 @@ public struct LedgePopoverView: View {
                 showFeedback("EXIF-Metadaten vollständig entfernt!")
                 HapticAudioEngine.shared.play(.conversionDone)
             } catch {
+                guard !Task.isCancelled else { return }
                 showFeedback("Bereinigung fehlgeschlagen: \(error.localizedDescription)")
             }
-            appState.isConverting = false
-            appState.conversionStatusMessage = nil
         }
     }
     
     private func runOCRExtraction() {
         guard let url = activeItem?.fileURL else { return }
+        currentConversionTask?.cancel()
         appState.isConverting = true
         appState.conversionStatusMessage = "Führe Texterkennung aus..."
         
-        Task {
+        currentConversionTask = Task {
+            defer {
+                appState.isConverting = false
+                appState.conversionStatusMessage = nil
+            }
             do {
                 let ocrText = try await LedgeCoordinator.shared.extractOCRText(from: url)
+                guard !Task.isCancelled else { return }
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(ocrText, forType: .string)
                 showFeedback("OCR-Text in Zwischenablage kopiert!")
                 HapticAudioEngine.shared.play(.conversionDone)
             } catch {
+                guard !Task.isCancelled else { return }
                 showFeedback("Kein Text im Bild erkannt")
             }
-            appState.isConverting = false
-            appState.conversionStatusMessage = nil
         }
     }
     
     private func copyTextContent() {
         guard let url = activeItem?.fileURL else { return }
+        let isScoped = url.startAccessingSecurityScopedResource()
+        defer {
+            if isScoped {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
         if let content = try? String(contentsOf: url, encoding: .utf8) {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(content, forType: .string)
@@ -1568,21 +1654,25 @@ public struct LedgePopoverView: View {
     }
     
     private func saveScreenshotToLibrary(_ screenshot: CapturedScreenshot) {
+        let isScoped = screenshot.fileURL.startAccessingSecurityScopedResource()
+        defer {
+            if isScoped {
+                screenshot.fileURL.stopAccessingSecurityScopedResource()
+            }
+        }
         Task {
             do {
-                let data = try Data(contentsOf: screenshot.fileURL)
-                let saved = try await LedgeCoordinator.shared.processDroppedImage(
-                    data: data,
-                    fileExtension: "png",
+                let savedURL = try await LedgeCoordinator.shared.processDroppedFileURL(
+                    screenshot.fileURL,
                     baseDirectory: appState.libraryDirectory,
                     sourceApp: "ScreenshotStudio"
                 )
                 let item = LedgeItem(
                     originalURL: screenshot.fileURL,
-                    savedURL: saved.savedURL,
+                    savedURL: savedURL,
                     timestamp: Date(),
                     contentType: .image,
-                    suggestedFileName: saved.savedURL.lastPathComponent,
+                    suggestedFileName: savedURL.lastPathComponent,
                     extractedText: screenshot.ocrText,
                     tags: ["Screenshot"]
                 )
@@ -1814,8 +1904,11 @@ private struct ScratchpadCardRow: View {
         }
         // DRAG-OUT: Dateinamen-Fix (Verwendet zwingend Dateireferenz & suggestedName)
         .onDrag {
+            guard let fileURL = item.fileURL,
+                  FileManager.default.fileExists(atPath: fileURL.path(percentEncoded: false)) else {
+                return NSItemProvider()
+            }
             HapticAudioEngine.shared.play(.dragOut)
-            guard let fileURL = item.fileURL else { return NSItemProvider() }
             let provider = NSItemProvider(contentsOf: fileURL) ?? NSItemProvider(object: fileURL as NSURL)
             provider.suggestedName = fileURL.lastPathComponent
             return provider

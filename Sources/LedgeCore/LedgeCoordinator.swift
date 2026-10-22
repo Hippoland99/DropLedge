@@ -118,29 +118,38 @@ public actor LedgeCoordinator {
         baseDirectory: URL,
         sourceApp: String? = nil
     ) async throws -> URL {
+        let isAccessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+        
         let ext = url.pathExtension.lowercased()
         let app = sourceApp ?? "Finder"
         
-        // 1. Bild-Verarbeitung
+        // 1. Bild-Verarbeitung (OOM-sicher via Vision URL & File Copy)
         let imageExtensions = ["png", "jpg", "jpeg", "heic", "webp", "tiff", "gif", "bmp"]
         if imageExtensions.contains(ext) {
-            let data = try Data(contentsOf: url)
-            let result = try await processDroppedImage(
-                data: data,
-                fileExtension: ext,
+            let detectedText = (try? await vision.recognizeText(from: url))?.fullText
+            let typeName = detectedText != nil ? "ScreenCapture" : "Image"
+            return try await storage.persistCategorizedFile(
+                sourceURL: url,
                 baseDirectory: baseDirectory,
-                sourceApp: app
+                category: .media,
+                typeName: typeName,
+                sourceApp: app,
+                fileExtension: ext,
+                spotlightComment: detectedText
             )
-            return result.savedURL
         }
         
-        // 2. Video-Verarbeitung
+        // 2. Video-Verarbeitung (OOM-sicher via Streaming / persistCategorizedFile)
         let videoExtensions = ["mov", "mp4", "m4v", "avi", "mkv", "webm"]
         if videoExtensions.contains(ext) {
-            let data = try Data(contentsOf: url)
             let typeName = url.deletingPathExtension().lastPathComponent
-            return try await storage.persistCategorized(
-                data: data,
+            return try await storage.persistCategorizedFile(
+                sourceURL: url,
                 baseDirectory: baseDirectory,
                 category: .media,
                 typeName: typeName,
@@ -160,13 +169,12 @@ public actor LedgeCoordinator {
             return try await processDroppedText(content, baseDirectory: baseDirectory, sourceApp: app)
         }
         
-        // 4. Dokumente (PDF, etc.)
-        let data = try Data(contentsOf: url)
+        // 4. Dokumente (PDF, etc.) (OOM-sicher via persistCategorizedFile)
         let category: StorageCategory = .documents
         let typeName = url.deletingPathExtension().lastPathComponent
         
-        return try await storage.persistCategorized(
-            data: data,
+        return try await storage.persistCategorizedFile(
+            sourceURL: url,
             baseDirectory: baseDirectory,
             category: category,
             typeName: typeName,
@@ -283,8 +291,7 @@ public actor LedgeCoordinator {
     }
     
     public func extractOCRText(from url: URL) async throws -> String {
-        let data = try Data(contentsOf: url)
-        let result = try await vision.recognizeText(from: data)
+        let result = try await vision.recognizeText(from: url)
         return result.fullText
     }
     

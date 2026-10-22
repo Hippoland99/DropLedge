@@ -103,6 +103,85 @@ public actor StorageCoordinator {
         )
     }
     
+    /// OOM-sichere Persistierung für vorhandene Dateien (Streams/Kopieren statt Data in RAM)
+    public func persistFile(
+        sourceURL: URL,
+        baseDirectory: URL,
+        subFolder: String,
+        desiredFileName: String,
+        spotlightComment: String? = nil,
+        sourceApplication: String? = nil
+    ) throws -> URL {
+        let isAccessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        
+        let destinationDir = baseDirectory.appendingPathComponent(subFolder, isDirectory: true)
+        if !fileManager.fileExists(atPath: destinationDir.path(percentEncoded: false)) {
+            try fileManager.createDirectory(at: destinationDir, withIntermediateDirectories: true)
+        }
+        
+        var destinationFileURL = destinationDir.appendingPathComponent(desiredFileName)
+        if fileManager.fileExists(atPath: destinationFileURL.path(percentEncoded: false)) {
+            let ext = destinationFileURL.pathExtension
+            let nameWithoutExt = destinationFileURL.deletingPathExtension().lastPathComponent
+            let uniqueID = UUID().uuidString.prefix(6)
+            let uniqueName = ext.isEmpty ? "\(nameWithoutExt)_\(uniqueID)" : "\(nameWithoutExt)_\(uniqueID).\(ext)"
+            destinationFileURL = destinationDir.appendingPathComponent(uniqueName)
+        }
+        
+        if fileManager.fileExists(atPath: destinationFileURL.path(percentEncoded: false)) {
+            try? fileManager.removeItem(at: destinationFileURL)
+        }
+        try fileManager.copyItem(at: sourceURL, to: destinationFileURL)
+        
+        if let comment = spotlightComment {
+            try? setFinderComment(comment, for: destinationFileURL)
+        }
+        if let sourceApp = sourceApplication {
+            try? setStringAttribute(name: Self.sourceAppAttribute, value: sourceApp, for: destinationFileURL)
+        }
+        if let checksum = try? calculateSHA256(forFileURL: destinationFileURL) {
+            try? setStringAttribute(name: Self.checksumAttribute, value: checksum, for: destinationFileURL)
+        }
+        
+        return destinationFileURL
+    }
+    
+    /// OOM-sichere High-Level-Persistierung vorhandener Dateien nach Schema
+    public func persistCategorizedFile(
+        sourceURL: URL,
+        baseDirectory: URL,
+        category: StorageCategory,
+        typeName: String,
+        sourceApp: String? = nil,
+        fileExtension: String,
+        spotlightComment: String? = nil,
+        date: Date = Date()
+    ) throws -> URL {
+        let yearMonth = yearMonthFormatter.string(from: date)
+        let subFolder = "\(yearMonth)/\(category.rawValue)"
+        
+        let timestamp = isoDateFormatter.string(from: date)
+        let sanitizedType = typeName.replacingOccurrences(of: " ", with: "")
+        let sanitizedApp = (sourceApp ?? "Finder").replacingOccurrences(of: " ", with: "")
+        let cleanExt = fileExtension.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        
+        let fileName = "\(timestamp)_\(sanitizedType)_\(sanitizedApp).\(cleanExt)"
+        
+        return try persistFile(
+            sourceURL: sourceURL,
+            baseDirectory: baseDirectory,
+            subFolder: subFolder,
+            desiredFileName: fileName,
+            spotlightComment: spotlightComment,
+            sourceApplication: sourceApp
+        )
+    }
+    
     // MARK: - Collision Resolution
     
     private func resolveCollision(in directory: URL, desiredFileName: String, data: Data) -> URL {
@@ -133,6 +212,33 @@ public actor StorageCoordinator {
     
     public func calculateSHA256(for data: Data) -> String {
         let digest = SHA256.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+    
+    /// Berechnet die SHA256-Prüfsumme einer Datei gestreamt in Chunks (schützt vor OOM bei großen Videos/Dateien)
+    public func calculateSHA256(forFileURL url: URL) throws -> String {
+        let isAccessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if isAccessing {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+        
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        
+        var hasher = SHA256()
+        let bufferSize = 64 * 1024
+        while autoreleasepool(invoking: {
+            let chunk = handle.readData(ofLength: bufferSize)
+            if !chunk.isEmpty {
+                hasher.update(data: chunk)
+                return true
+            }
+            return false
+        }) {}
+        
+        let digest = hasher.finalize()
         return digest.map { String(format: "%02x", $0) }.joined()
     }
     
