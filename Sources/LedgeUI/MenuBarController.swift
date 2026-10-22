@@ -98,26 +98,7 @@ public final class MenuBarController {
             
             overlay.onDropURLs = { urls in
                 Task { @MainActor in
-                    let coordinator = LedgeCoordinator.shared
-                    let baseDir = AppState.shared.libraryDirectory
-                    
-                    for url in urls {
-                        do {
-                            let saved = try await coordinator.processDroppedFileURL(url, baseDirectory: baseDir)
-                            let item = LedgeItem(
-                                originalURL: url,
-                                savedURL: saved,
-                                timestamp: Date(),
-                                contentType: .item,
-                                suggestedFileName: saved.lastPathComponent,
-                                tags: ["Quick-Save"]
-                            )
-                            AppState.shared.addOrUpdateItem(item)
-                            print("[DropLedge MenuBar] Dropped & saved: \(saved.path)")
-                        } catch {
-                            print("[DropLedge MenuBar] Drop Error: \(error)")
-                        }
-                    }
+                    AppState.shared.handleDrop(in: .scratchpad, urls: urls, text: nil)
                     HapticAudioEngine.shared.play(.dropSuccess)
                 }
             }

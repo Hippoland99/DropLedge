@@ -975,10 +975,15 @@ public struct LedgePopoverView: View {
                                 appState.selectedOrLastDroppedItem = item
                             },
                             onDelete: {
+                                let isExternal = (item.savedURL == nil || item.savedURL == item.originalURL)
                                 withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
                                     appState.removeItem(item, moveToTrash: true)
                                 }
-                                showFeedback("Datei in Papierkorb verschoben")
+                                if isExternal {
+                                    showFeedback("Vom Scratchpad entfernt (Originaldatei bleibt erhalten)")
+                                } else {
+                                    showFeedback("Datei in Papierkorb verschoben")
+                                }
                                 HapticAudioEngine.shared.play(.deleteItem)
                             }
                         )

@@ -81,6 +81,8 @@ final class LedgeUITests: XCTestCase {
         try await Task.sleep(nanoseconds: 150_000_000)
         appState.removeItem(firstItem, moveToTrash: true)
         XCTAssertFalse(appState.recentItems.contains(where: { $0.id == firstItem.id }))
+        // Sicherheits-Check: Die Originaldatei darf NICHT gelöscht werden!
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dummyURL.path), "Original-Datei wurde fälschlicherweise gelöscht!")
     }
     
     func testSnippetDraftAndAutoDetection() {
@@ -117,5 +119,47 @@ final class LedgeUITests: XCTestCase {
         // Simuliere Drop / Paste ins AppState
         appState.handleDrop(in: .smartSave, urls: readURLs!, text: nil)
         XCTAssertTrue(appState.recentItems.contains(where: { $0.suggestedFileName == dummyURL.lastPathComponent }))
+    }
+    
+    @MainActor
+    func testDroppingFileDoesNotDuplicateOrDeleteOriginal() async throws {
+        let appState = AppState.shared
+        let originalURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("cover_test_\(UUID().uuidString).jpg")
+        let dummyBytes = Data(repeating: 0xFF, count: 512)
+        try dummyBytes.write(to: originalURL, options: .atomic)
+        
+        let initialCount = appState.recentItems.count
+        
+        // 1. Datei droppen
+        appState.handleDrop(in: .smartSave, urls: [originalURL], text: nil)
+        
+        // Es darf genau 1 Item mehr existieren
+        XCTAssertEqual(appState.recentItems.count, initialCount + 1)
+        
+        // Warten auf Hintergrund-Task
+        try await Task.sleep(nanoseconds: 100_000_000)
+        
+        // Es darf immer noch genau 1 Item mehr existieren (KEINE Duplikate / zweite Datei!)
+        XCTAssertEqual(appState.recentItems.count, initialCount + 1)
+        
+        guard let item = appState.recentItems.first(where: { $0.originalURL == originalURL }) else {
+            XCTFail("Item nicht gefunden")
+            return
+        }
+        
+        XCTAssertEqual(item.suggestedFileName, originalURL.lastPathComponent)
+        XCTAssertNil(item.savedURL, "savedURL sollte für externe Originaldateien nil sein")
+        
+        // 2. Item aus Scratchpad löschen
+        appState.removeItem(item, moveToTrash: true)
+        
+        // Item ist aus der UI entfernt
+        XCTAssertFalse(appState.recentItems.contains(where: { $0.id == item.id }))
+        
+        // KRITISCH: Die Originaldatei auf der Festplatte MUSS intakt bleiben!
+        XCTAssertTrue(FileManager.default.fileExists(atPath: originalURL.path), "Originaldatei wurde gelöscht!")
+        
+        // Aufräumen
+        try? FileManager.default.removeItem(at: originalURL)
     }
 }

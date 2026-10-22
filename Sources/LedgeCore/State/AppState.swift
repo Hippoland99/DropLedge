@@ -40,7 +40,11 @@ public final class AppState {
     }
     
     public func addOrUpdateItem(_ item: LedgeItem) {
-        recentItems.removeAll { $0.id == item.id || ($0.fileURL != nil && $0.fileURL == item.fileURL) }
+        recentItems.removeAll {
+            $0.id == item.id ||
+            ($0.fileURL != nil && item.fileURL != nil && $0.fileURL == item.fileURL) ||
+            ($0.originalURL != nil && item.originalURL != nil && $0.originalURL == item.originalURL)
+        }
         recentItems.insert(item, at: 0)
         self.selectedOrLastDroppedItem = item
     }
@@ -52,8 +56,28 @@ public final class AppState {
             selectedOrLastDroppedItem = recentItems.first
         }
         
-        if moveToTrash, let url = item.fileURL, FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) {
-            try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        guard moveToTrash else { return }
+        
+        // SICHERHEITS-SCHUTZ: Externe Original-Dateien des Nutzers NIEMALS vom Dateisystem löschen!
+        guard let savedURL = item.savedURL else {
+            // Reines Shelf-Item einer Originaldatei -> Nur aus der Liste entfernen, niemals anfassen!
+            return
+        }
+        
+        // Falls savedURL und originalURL auf dieselbe Datei verweisen: Niemals löschen!
+        if let original = item.originalURL, original.standardizedFileURL.path == savedURL.standardizedFileURL.path {
+            return
+        }
+        
+        // Nur von DropLedge intern generierte Dateien (in DropLedge Library oder NSTemporaryDirectory) dürfen in den Papierkorb:
+        let libPath = libraryDirectory.standardizedFileURL.path
+        let tempPath = URL(fileURLWithPath: NSTemporaryDirectory()).standardizedFileURL.path
+        let filePath = savedURL.standardizedFileURL.path
+        
+        if filePath.hasPrefix(libPath) || filePath.hasPrefix(tempPath) {
+            if FileManager.default.fileExists(atPath: filePath) {
+                try? FileManager.default.trashItem(at: savedURL, resultingItemURL: nil)
+            }
         }
     }
     
@@ -88,10 +112,12 @@ public final class AppState {
     public func handleDrop(in zone: DropZoneType, urls: [URL], text: String?) {
         self.lastActionDescription = "Dropped \(urls.count) items into \(zone.rawValue)"
         
+        // 1. Für jede abgelegte Datei genau EINEN Shelf-Eintrag anlegen mit originalURL
+        // savedURL bleibt nil, da die Datei extern auf dem Mac des Nutzers liegt und nicht dupliziert wird.
         for url in urls {
             let item = LedgeItem(
                 originalURL: url,
-                savedURL: url,
+                savedURL: nil,
                 timestamp: Date(),
                 contentType: UTType(filenameExtension: url.pathExtension) ?? .item,
                 suggestedFileName: url.lastPathComponent,
@@ -118,26 +144,22 @@ public final class AppState {
             let coordinator = LedgeCoordinator.shared
             let baseDir = self.libraryDirectory
             
+            // 2. OCR im Hintergrund für Bilddateien ausführen und denselben Eintrag aktualisieren
             for url in urls {
-                do {
-                    let saved = try await coordinator.processDroppedFileURL(url, baseDirectory: baseDir)
-                    var updated = LedgeItem(
-                        originalURL: url,
-                        savedURL: saved,
-                        timestamp: Date(),
-                        contentType: UTType(filenameExtension: saved.pathExtension) ?? .item,
-                        suggestedFileName: saved.lastPathComponent,
-                        extractedText: nil,
-                        tags: [zone.rawValue]
-                    )
-                    if ["png", "jpg", "jpeg", "heic", "webp"].contains(saved.pathExtension.lowercased()) {
-                        if let ocr = try? await coordinator.extractOCRText(from: saved) {
-                            updated.extractedText = ocr
+                let ext = url.pathExtension.lowercased()
+                if ["png", "jpg", "jpeg", "heic", "webp"].contains(ext) {
+                    if let ocr = try? await coordinator.extractOCRText(from: url) {
+                        await MainActor.run {
+                            if let idx = self.recentItems.firstIndex(where: { $0.originalURL == url || $0.fileURL == url }) {
+                                var existing = self.recentItems[idx]
+                                existing.extractedText = ocr
+                                self.recentItems[idx] = existing
+                                if self.selectedOrLastDroppedItem?.id == existing.id {
+                                    self.selectedOrLastDroppedItem = existing
+                                }
+                            }
                         }
                     }
-                    self.addOrUpdateItem(updated)
-                } catch {
-                    print("[DropLedge] Error saving dropped file: \(error)")
                 }
             }
             
