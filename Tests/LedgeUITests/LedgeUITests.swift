@@ -162,4 +162,23 @@ final class LedgeUITests: XCTestCase {
         // Aufräumen
         try? FileManager.default.removeItem(at: originalURL)
     }
+    
+    func testUniversalDragOutProviderForWebsitesAndApps() throws {
+        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("DropLedge_UniversalDrag_\(UUID().uuidString).png")
+        try "test-content".write(to: tempURL, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        
+        let provider = makeFileItemProvider(for: tempURL)
+        
+        // 1. suggestedName MUSS mit Dateinamen übereinstimmen
+        XCTAssertEqual(provider.suggestedName, tempURL.lastPathComponent)
+        
+        // 2. 'public.file-url' MUSS als allererste Registrierung vorhanden sein (damit Browser es als File erkennen)
+        XCTAssertEqual(provider.registeredTypeIdentifiers.first, "public.file-url")
+        XCTAssertTrue(provider.registeredTypeIdentifiers.contains("public.url"))
+        XCTAssertTrue(provider.registeredTypeIdentifiers.contains("public.png"))
+        
+        // 3. Kann als NSURL geladen werden
+        XCTAssertTrue(provider.canLoadObject(ofClass: NSURL.self))
+    }
 }

@@ -220,11 +220,24 @@ public struct LedgePopoverView: View {
                                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                                         .foregroundStyle(.secondary)
                                 }
+                                
+                                Image(systemName: "hand.draw.fill")
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(.secondary.opacity(0.8))
                             }
                             .padding(.horizontal, 9)
                             .padding(.vertical, 3)
                             .background(Color.black.opacity(0.24))
                             .clipShape(Capsule())
+                            .contentShape(Capsule())
+                            .onDrag {
+                                guard FileManager.default.fileExists(atPath: fileURL.path(percentEncoded: false)) else {
+                                    return NSItemProvider()
+                                }
+                                HapticAudioEngine.shared.play(.dragOut)
+                                return makeFileItemProvider(for: fileURL)
+                            }
+                            .help("Datei per Drag-and-Drop in Programme oder Websites ziehen")
                         }
                         
                         Text(isTargetedForDrop ? "Datei jetzt loslassen" : "Dateien oder Videos hier ablegen")
@@ -1699,6 +1712,58 @@ public struct LedgePopoverView: View {
     }
 }
 
+// MARK: - Universal Drag-Out ItemProvider Helper (Native Apps & Web-Browser)
+
+/// Erstellt einen plattform- und webkompatiblen NSItemProvider für Drag-Out.
+/// Garantiert, dass der Drag sowohl von nativen macOS-Apps (Finder, Slack, Messages)
+/// als auch von Web-Browsern (Chrome, Safari, Firefox, Arc) und Web-Upload-Zonen
+/// (Discord Web, ChatGPT, Slack Web, GitHub) als vollwertige Datei erkannt wird.
+func makeFileItemProvider(for fileURL: URL) -> NSItemProvider {
+    let provider = NSItemProvider()
+    provider.suggestedName = fileURL.lastPathComponent
+    
+    // 1. Primär: NSURL mit visibility: .all
+    // Registriert 'public.file-url' an 1. Stelle sowie 'NSFilenamesPboardType'.
+    // Web-Browser (Chromium & WebKit) benötigen diese Typen zwingend, um HTML5 'event.dataTransfer.files'
+    // zu befüllen und Drag-Events auf Websites zuzulassen.
+    provider.registerObject(fileURL as NSURL, visibility: .all)
+    
+    // 2. Sandboxing-sichere Dateirepräsentation für Browser und fremde Sandboxes
+    let ext = fileURL.pathExtension
+    let uti = UTType(filenameExtension: ext) ?? .item
+    provider.registerFileRepresentation(forTypeIdentifier: uti.identifier, fileOptions: [], visibility: .all) { completion in
+        let isScoped = fileURL.startAccessingSecurityScopedResource()
+        defer {
+            if isScoped {
+                fileURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        completion(fileURL, false, nil)
+        return nil
+    }
+    
+    // 3. Bild-Datenrepräsentation (falls Bild) für Web-Editoren und ContentEditable
+    if let imageUTI = UTType(filenameExtension: ext), imageUTI.conforms(to: .image) {
+        provider.registerDataRepresentation(forTypeIdentifier: imageUTI.identifier, visibility: .all) { completion in
+            let isScoped = fileURL.startAccessingSecurityScopedResource()
+            defer {
+                if isScoped {
+                    fileURL.stopAccessingSecurityScopedResource()
+                }
+            }
+            do {
+                let data = try Data(contentsOf: fileURL)
+                completion(data, nil)
+            } catch {
+                completion(nil, error)
+            }
+            return nil
+        }
+    }
+    
+    return provider
+}
+
 // MARK: - Subcomponents
 
 private struct ScreenshotPreviewCard: View {
@@ -1714,6 +1779,10 @@ private struct ScreenshotPreviewCard: View {
                 Label("Screenshot erfasst", systemImage: "sparkles")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.orange)
+                
+                Image(systemName: "hand.draw.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange.opacity(0.8))
                 
                 Spacer()
                 
@@ -1775,6 +1844,16 @@ private struct ScreenshotPreviewCard: View {
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .stroke(Color.orange.opacity(0.3), lineWidth: 1)
         )
+        .contentShape(Rectangle())
+        .onDrag {
+            let fileURL = screenshot.fileURL
+            guard FileManager.default.fileExists(atPath: fileURL.path(percentEncoded: false)) else {
+                return NSItemProvider()
+            }
+            HapticAudioEngine.shared.play(.dragOut)
+            return makeFileItemProvider(for: fileURL)
+        }
+        .help("Screenshot gedrückt halten & direkt in Website, Chat oder Finder ziehen")
     }
 }
 
@@ -1902,16 +1981,14 @@ private struct ScratchpadCardRow: View {
         .onTapGesture {
             onSelect()
         }
-        // DRAG-OUT: Dateinamen-Fix (Verwendet zwingend Dateireferenz & suggestedName)
+        // DRAG-OUT: Zwingend universeller File-Provider für Native Apps UND Websites/Browser
         .onDrag {
             guard let fileURL = item.fileURL,
                   FileManager.default.fileExists(atPath: fileURL.path(percentEncoded: false)) else {
                 return NSItemProvider()
             }
             HapticAudioEngine.shared.play(.dragOut)
-            let provider = NSItemProvider(contentsOf: fileURL) ?? NSItemProvider(object: fileURL as NSURL)
-            provider.suggestedName = fileURL.lastPathComponent
-            return provider
+            return makeFileItemProvider(for: fileURL)
         }
     }
 }
