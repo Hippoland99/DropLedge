@@ -229,14 +229,15 @@ public struct LedgePopoverView: View {
                             .padding(.vertical, 3)
                             .background(Color.black.opacity(0.24))
                             .clipShape(Capsule())
-                            .contentShape(Capsule())
-                            .onDrag {
-                                guard FileManager.default.fileExists(atPath: fileURL.path(percentEncoded: false)) else {
-                                    return NSItemProvider()
-                                }
-                                HapticAudioEngine.shared.play(.dragOut)
-                                return makeFileItemProvider(for: fileURL)
-                            }
+                            .overlay(
+                                NativeFileDragOverlay(
+                                    fileURL: fileURL,
+                                    onDragStarted: {
+                                        HapticAudioEngine.shared.play(.dragOut)
+                                    }
+                                )
+                                .clipShape(Capsule())
+                            )
                             .help("Datei per Drag-and-Drop in Programme oder Websites ziehen")
                         }
                         
@@ -1712,6 +1713,145 @@ public struct LedgePopoverView: View {
     }
 }
 
+// MARK: - Native macOS File Drag Source (Finder-identisch für Web-Browser, Electron & Native Apps)
+
+@MainActor
+final class NativeFileDragSourceView: NSView, NSDraggingSource {
+    var fileURL: URL?
+    var onClick: (() -> Void)?
+    var onDragStarted: (() -> Void)?
+    var onHover: ((Bool) -> Void)?
+    
+    private var initialMouseDownLocation: NSPoint?
+    private var activeSecurityScopedURL: URL?
+    private var trackingArea: NSTrackingArea?
+    
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea {
+            removeTrackingArea(existing)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+    
+    override func mouseEntered(with event: NSEvent) {
+        onHover?(true)
+    }
+    
+    override func mouseExited(with event: NSEvent) {
+        onHover?(false)
+    }
+    
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        return [.copy, .generic]
+    }
+    
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        initialMouseDownLocation = nil
+        if let url = activeSecurityScopedURL {
+            url.stopAccessingSecurityScopedResource()
+            activeSecurityScopedURL = nil
+        }
+        // Stelle normales Popover-Verhalten wieder her, wenn Popover nicht angepinnt ist
+        DispatchQueue.main.async {
+            if !AppState.shared.isPinned {
+                MenuBarController.shared.popover?.behavior = .transient
+            }
+        }
+    }
+    
+    override func mouseDown(with event: NSEvent) {
+        initialMouseDownLocation = event.locationInWindow
+    }
+    
+    override func mouseDragged(with event: NSEvent) {
+        guard let startLoc = initialMouseDownLocation,
+              let url = fileURL,
+              FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else {
+            return
+        }
+        
+        let currentLoc = event.locationInWindow
+        let dist = hypot(currentLoc.x - startLoc.x, currentLoc.y - startLoc.y)
+        guard dist > 3.0 else { return }
+        
+        initialMouseDownLocation = nil
+        onDragStarted?()
+        
+        // Verhindere, dass das Popover während des Drags vorzeitig schließt
+        MenuBarController.shared.popover?.behavior = .applicationDefined
+        
+        if url.startAccessingSecurityScopedResource() {
+            activeSecurityScopedURL = url
+        }
+        
+        // 1. Zwingend: NSURL als pasteboardWriter (exakt wie im macOS Finder!)
+        // Schreibt synchron 'NSFilenamesPboardType' und 'public.file-url' auf das Drag-Pasteboard.
+        // Dadurch erkennt Chromium / WebKit den Drag sofort als echtes HTML5 'Files' Objekt.
+        let draggingItem = NSDraggingItem(pasteboardWriter: url as NSURL)
+        
+        // 2. Erstelle passendes Drag-Icon
+        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        icon.size = NSSize(width: 48, height: 48)
+        let mouseInView = convert(event.locationInWindow, from: nil)
+        let dragRect = NSRect(
+            x: mouseInView.x - 24,
+            y: mouseInView.y - 24,
+            width: 48,
+            height: 48
+        )
+        draggingItem.setDraggingFrame(dragRect, contents: icon)
+        
+        // 3. Starte native macOS Drag-Session
+        beginDraggingSession(with: [draggingItem], event: event, source: self)
+    }
+    
+    override func mouseUp(with event: NSEvent) {
+        if initialMouseDownLocation != nil {
+            initialMouseDownLocation = nil
+            onClick?()
+        }
+    }
+}
+
+struct NativeFileDragOverlay: NSViewRepresentable {
+    let fileURL: URL?
+    var onClick: (() -> Void)? = nil
+    var onDragStarted: (() -> Void)? = nil
+    var onHover: ((Bool) -> Void)? = nil
+    
+    func makeNSView(context: Context) -> NativeFileDragSourceView {
+        let view = NativeFileDragSourceView()
+        view.fileURL = fileURL
+        view.onClick = onClick
+        view.onDragStarted = onDragStarted
+        view.onHover = onHover
+        return view
+    }
+    
+    func updateNSView(_ nsView: NativeFileDragSourceView, context: Context) {
+        nsView.fileURL = fileURL
+        nsView.onClick = onClick
+        nsView.onDragStarted = onDragStarted
+        nsView.onHover = onHover
+    }
+}
+
 // MARK: - Universal Drag-Out ItemProvider Helper (Native Apps & Web-Browser)
 
 /// Erstellt einen plattform- und webkompatiblen NSItemProvider für Drag-Out.
@@ -1723,9 +1863,6 @@ func makeFileItemProvider(for fileURL: URL) -> NSItemProvider {
     provider.suggestedName = fileURL.lastPathComponent
     
     // 1. Primär: NSURL mit visibility: .all
-    // Registriert 'public.file-url' an 1. Stelle sowie 'NSFilenamesPboardType'.
-    // Web-Browser (Chromium & WebKit) benötigen diese Typen zwingend, um HTML5 'event.dataTransfer.files'
-    // zu befüllen und Drag-Events auf Websites zuzulassen.
     provider.registerObject(fileURL as NSURL, visibility: .all)
     
     // 2. Sandboxing-sichere Dateirepräsentation für Browser und fremde Sandboxes
@@ -1761,6 +1898,23 @@ func makeFileItemProvider(for fileURL: URL) -> NSItemProvider {
         }
     }
     
+    // 4. Legacy NSFilenamesPboardType (XML PropertyList Array mit Dateipfad)
+    provider.registerDataRepresentation(forTypeIdentifier: "NSFilenamesPboardType", visibility: .all) { completion in
+        let isScoped = fileURL.startAccessingSecurityScopedResource()
+        defer {
+            if isScoped {
+                fileURL.stopAccessingSecurityScopedResource()
+            }
+        }
+        do {
+            let plistData = try PropertyListSerialization.data(fromPropertyList: [fileURL.path], format: .xml, options: 0)
+            completion(plistData, nil)
+        } catch {
+            completion(nil, error)
+        }
+        return nil
+    }
+    
     return provider
 }
 
@@ -1780,9 +1934,25 @@ private struct ScreenshotPreviewCard: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.orange)
                 
-                Image(systemName: "hand.draw.fill")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.orange.opacity(0.8))
+                HStack(spacing: 3) {
+                    Image(systemName: "hand.draw.fill")
+                    Text("In Website/Chat ziehen")
+                }
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.orange.opacity(0.18))
+                .clipShape(Capsule())
+                .overlay(
+                    NativeFileDragOverlay(
+                        fileURL: screenshot.fileURL,
+                        onDragStarted: {
+                            HapticAudioEngine.shared.play(.dragOut)
+                        }
+                    )
+                    .clipShape(Capsule())
+                )
                 
                 Spacer()
                 
@@ -1803,6 +1973,14 @@ private struct ScreenshotPreviewCard: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.black.opacity(0.2))
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(
+                        NativeFileDragOverlay(
+                            fileURL: screenshot.fileURL,
+                            onDragStarted: {
+                                HapticAudioEngine.shared.play(.dragOut)
+                            }
+                        )
+                    )
             }
             
             HStack(spacing: 6) {
@@ -1844,15 +2022,6 @@ private struct ScreenshotPreviewCard: View {
             RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .stroke(Color.orange.opacity(0.3), lineWidth: 1)
         )
-        .contentShape(Rectangle())
-        .onDrag {
-            let fileURL = screenshot.fileURL
-            guard FileManager.default.fileExists(atPath: fileURL.path(percentEncoded: false)) else {
-                return NSItemProvider()
-            }
-            HapticAudioEngine.shared.play(.dragOut)
-            return makeFileItemProvider(for: fileURL)
-        }
         .help("Screenshot gedrückt halten & direkt in Website, Chat oder Finder ziehen")
     }
 }
@@ -1952,43 +2121,50 @@ private struct ScratchpadCardRow: View {
             
             Spacer(minLength: 0)
             
-            // Lösch-Button (✕) oben rechts bei Hover oder Selektion
-            if isHovered || isSelected {
-                Button(action: onDelete) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color.secondary.opacity(0.85))
-                }
-                .buttonStyle(.plain)
-                .help("Aus Scratchpad entfernen & in Papierkorb verschieben")
-                .transition(.opacity)
-            } else {
+            if !isHovered && !isSelected {
                 Image(systemName: "hand.draw.fill")
                     .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
+            } else {
+                Color.clear
+                    .frame(width: 14, height: 14)
             }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(isSelected ? Color.accentColor.opacity(0.18) : (isHovered ? Color.white.opacity(0.07) : Color.white.opacity(0.04)))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) {
-                isHovered = hovering
+        // Nativer macOS Drag-Out (Finder-identisch für Web-Browser, Electron & Apps)
+        .overlay(
+            NativeFileDragOverlay(
+                fileURL: item.fileURL,
+                onClick: {
+                    onSelect()
+                },
+                onDragStarted: {
+                    HapticAudioEngine.shared.play(.dragOut)
+                },
+                onHover: { hovering in
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        isHovered = hovering
+                    }
+                }
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        )
+        // Lösch-Button oben auf dem Drag-Overlay, damit Klicks auf ✕ nicht die Drag-Session triggern
+        .overlay(alignment: .trailing) {
+            if isHovered || isSelected {
+                Button(action: onDelete) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.secondary.opacity(0.85))
+                        .padding(.trailing, 8)
+                }
+                .buttonStyle(.plain)
+                .help("Aus Scratchpad entfernen & in Papierkorb verschieben")
+                .transition(.opacity)
             }
-        }
-        .onTapGesture {
-            onSelect()
-        }
-        // DRAG-OUT: Zwingend universeller File-Provider für Native Apps UND Websites/Browser
-        .onDrag {
-            guard let fileURL = item.fileURL,
-                  FileManager.default.fileExists(atPath: fileURL.path(percentEncoded: false)) else {
-                return NSItemProvider()
-            }
-            HapticAudioEngine.shared.play(.dragOut)
-            return makeFileItemProvider(for: fileURL)
         }
     }
 }

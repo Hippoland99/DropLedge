@@ -181,4 +181,43 @@ final class LedgeUITests: XCTestCase {
         // 3. Kann als NSURL geladen werden
         XCTAssertTrue(provider.canLoadObject(ofClass: NSURL.self))
     }
+    
+    @MainActor
+    func testNativeFileDragSourceViewSessionAndPasteboard() throws {
+        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("NativeDragTest_\(UUID().uuidString).png")
+        try "test-png-data".write(to: tempURL, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        
+        let dragSource = NativeFileDragSourceView(frame: NSRect(x: 0, y: 0, width: 200, height: 40))
+        dragSource.fileURL = tempURL
+        
+        var clicked = false
+        var hoverState: Bool? = nil
+        dragSource.onClick = { clicked = true }
+        dragSource.onHover = { hoverState = $0 }
+        
+        // 1. Hover Test
+        if let enterEvent = NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 1, trackingNumber: 0, userData: nil) {
+            dragSource.mouseEntered(with: enterEvent)
+            XCTAssertEqual(hoverState, true)
+        }
+        
+        if let exitEvent = NSEvent.enterExitEvent(with: .mouseExited, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 2, trackingNumber: 0, userData: nil) {
+            dragSource.mouseExited(with: exitEvent)
+            XCTAssertEqual(hoverState, false)
+        }
+        
+        // 2. Click Test
+        if let downEvent = NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 10, y: 10), modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 3, clickCount: 1, pressure: 1.0),
+           let upEvent = NSEvent.mouseEvent(with: .leftMouseUp, location: NSPoint(x: 10, y: 10), modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 4, clickCount: 1, pressure: 0.0) {
+            dragSource.mouseDown(with: downEvent)
+            dragSource.mouseUp(with: upEvent)
+            XCTAssertTrue(clicked)
+        }
+        
+        // 3. Operation Mask
+        let mask = dragSource.draggingSession(NSDraggingSession(), sourceOperationMaskFor: .outsideApplication)
+        XCTAssertTrue(mask.contains(NSDragOperation.copy))
+        XCTAssertTrue(mask.contains(NSDragOperation.generic))
+    }
 }
