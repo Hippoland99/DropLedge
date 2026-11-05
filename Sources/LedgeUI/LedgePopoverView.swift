@@ -13,6 +13,7 @@ public enum PopoverTab: String, CaseIterable, Identifiable {
 
 public struct LedgePopoverView: View {
     @State private var appState = AppState.shared
+    @ObservedObject private var autostartManager = AutostartManager.shared
     @State private var selectedTab: PopoverTab = .quickActions
     @State private var isTargetedForDrop: Bool = false
     @State private var actionFeedbackMessage: String?
@@ -135,6 +136,42 @@ public struct LedgePopoverView: View {
                 }
                 .buttonStyle(.plain)
                 .help(appState.isPinned ? "Angepinnt: Schließt nicht beim Klick außerhalb" : "Anpinnen: Fenster dauerhaft offen lassen")
+                
+                // Optionen- & Autostart-Menü (⋯)
+                Menu {
+                    Button {
+                        autostartManager.toggleAutostart()
+                        if autostartManager.isAutostartEnabled {
+                            showFeedback("Autostart beim Mac-Start aktiviert")
+                        } else {
+                            showFeedback("Autostart deaktiviert")
+                        }
+                    } label: {
+                        if autostartManager.isAutostartEnabled {
+                            Label("Beim Mac-Start öffnen (Aktiv)", systemImage: "checkmark.circle.fill")
+                        } else {
+                            Label("Beim Mac-Start öffnen", systemImage: "circle")
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    Button(role: .destructive) {
+                        NSApp.terminate(nil)
+                    } label: {
+                        Label("DropLedge beenden", systemImage: "power")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.secondary)
+                        .padding(5)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Circle())
+                }
+                .menuStyle(.borderlessButton)
+                .frame(width: 22, height: 22)
+                .help("Optionen: Autostart & Beenden")
             }
             .padding(.horizontal, 2)
             

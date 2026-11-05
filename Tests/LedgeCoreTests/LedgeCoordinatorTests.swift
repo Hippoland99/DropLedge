@@ -224,4 +224,26 @@ final class LedgeCoordinatorTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: savedURL!.path))
         XCTAssertEqual(savedURL?.pathExtension.lowercased(), "json")
     }
+    
+    @MainActor
+    func testAutostartManagerEnableAndDisable() throws {
+        let manager = AutostartManager.shared
+        
+        // 1. Aktivieren
+        let enabled = manager.enableAutostart()
+        XCTAssertTrue(enabled)
+        XCTAssertTrue(manager.isAutostartEnabled)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manager.plistURL.path))
+        
+        // Inhalt validieren
+        let content = try String(contentsOf: manager.plistURL, encoding: .utf8)
+        XCTAssertTrue(content.contains(manager.agentLabel))
+        XCTAssertTrue(content.contains("<key>RunAtLoad</key>"))
+        
+        // 2. Deaktivieren
+        let disabled = manager.disableAutostart()
+        XCTAssertTrue(disabled)
+        XCTAssertFalse(manager.isAutostartEnabled)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: manager.plistURL.path))
+    }
 }

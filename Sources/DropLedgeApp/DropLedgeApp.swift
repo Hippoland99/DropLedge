@@ -21,6 +21,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MenuBarController.shared.setup()
         print("[DropLedge] MenuBarController active with tray.and.arrow.down symbol.")
         
+        // 1b. Autostart (macOS LaunchAgent) sicherstellen
+        AutostartManager.shared.enableAutostart()
+        print("[DropLedge] Autostart LaunchAgent active.")
+        
         // 2. Clipboard Monitor aktivieren
         ClipboardMonitor.shared.onClipboardChanged = { pasteboard in
             let types = pasteboard.types?.map { $0.rawValue }.joined(separator: ", ") ?? "none"
